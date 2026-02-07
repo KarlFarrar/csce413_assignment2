@@ -1,6 +1,7 @@
 services:
   webapp:
     container_name: 2_network_webapp
+    privileged: true
     build:
       context: ./web_app
       network: host

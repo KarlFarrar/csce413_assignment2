@@ -19,7 +19,38 @@ TODO for students:
 
 import socket
 import sys
+import time
+import ipaddress
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+
+def grab_banner(sock):
+    """Attempt to grab a service banner"""
+    try: 
+        sock.settimeout(1)
+        return sock.recv(1024).decode(errors="ignore").strip()
+    except Exception:
+        return ""
+
+def expand_targets(target):
+    """
+    Expands a target into a list of IP addresses.
+    Supports single IPs, hostnames, and CIDR notation.
+    """
+    targets = []
+
+    try:
+        if "/" in target:
+            network = ipaddress.ip_network(target, strict=False)
+            for ip in network.hosts():
+                targets.append(str(ip))
+        else:
+            targets.append(target)
+    except ValueError:
+        # Hostname fallback
+        targets.append(target)
+
+    return targets
 
 def scan_port(target, port, timeout=1.0):
     """
@@ -33,20 +64,44 @@ def scan_port(target, port, timeout=1.0):
     Returns:
         bool: True if port is open, False otherwise
     """
+    start_time = time.time()
+    # I want to try storing and returning the information for my use
+    result = {
+        "port": port, 
+        "state": "closed",
+        "time": None,
+        "banner": ""
+    }
+
+
     try:
         # TODO: Create a socket
-        # TODO: Set timeout
-        # TODO: Try to connect to target:port
-        # TODO: Close the socket
-        # TODO: Return True if connection successful
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            # TODO: Set timeout
+            sock.settimeout(timeout)
+            # TODO: Try to connect to target:port
+            sock.connect((target, port))
 
-        pass  # Remove this and implement
+            result["state"] = "open"
 
-    except (socket.timeout, ConnectionRefusedError, OSError):
-        return False
+            banner = grab_banner(sock)
+            result["banner"] = banner
+            # TODO: Close the socket
+            # TODO: Return True if connection successful
+            
+
+    except socket.timeout:
+        result["state"] = "filtered (timeout)"
+    except ConnectionRefusedError:
+        result["state"] = "closed"
+    except OSError:
+        result["state"] = "error"
+    
+    result["time"] = round(time.time() - start_time, 4)
+    return result
 
 
-def scan_range(target, start_port, end_port):
+def scan_range(target, start_port, end_port, threads=300 ):
     """
     Scan a range of ports on the target host
 
@@ -59,21 +114,32 @@ def scan_range(target, start_port, end_port):
         list: List of open ports
     """
     open_ports = []
+    results = []
 
     print(f"[*] Scanning {target} from port {start_port} to {end_port}")
     print(f"[*] This may take a while...")
+    print(f"[*] Using {threads}\n")
 
     # TODO: Implement the scanning logic
     # Hint: Loop through port range and call scan_port()
     # Hint: Consider using threading for better performance
+    with ThreadPoolExecutor(max_workers=threads) as executer: 
+        futures = {
+            executer.submit(scan_port, target, port): port
+            for port in range(start_port, end_port + 1)
+        }
 
-    for port in range(start_port, end_port + 1):
-        # TODO: Scan this port
-        # TODO: If open, add to open_ports list
-        # TODO: Print progress (optional)
-        pass  # Remove this and implement
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
 
-    return open_ports
+            if result["state"] == "open":
+                banner = f" | {result['banner']}" if result["banner"] else ""
+                print(
+                    f"[+] Port {result['port']:5d} OPEN "
+                    f"({result['time']}s){banner}"
+                )
+    return sorted(results, key=lambda x: x["port"])
 
 
 def main():
@@ -84,24 +150,45 @@ def main():
     # TODO: Display results
 
     # Example usage (you should improve this):
-    if len(sys.argv) < 2:
-        print("Usage: python3 port_scanner_template.py <target>")
-        print("Example: python3 port_scanner_template.py 172.20.0.10")
+    if len(sys.argv) < 4:
+        print("Usage: python3 port_scanner_template.py <target> <start_port> <end_port>")
+        print("Example: python3 port_scanner_template.py 172.20.0.10 1 1024")
         sys.exit(1)
 
-    target = sys.argv[1]
-    start_port = 1
-    end_port = 1024  # Scan first 1024 ports by default
+    targets = expand_targets(sys.argv[1])
+    try: 
+        start_port = int(sys.argv[2]) if sys.argv[2] else 1024
+        end_port = int(sys.argv[3])  # Scan first 1024 ports by default
+    except ValueError:
+        print("Ports must be integers")
+        sys.exit(1)
 
-    print(f"[*] Starting port scan on {target}")
+    if start_port < 1 or end_port > 65535 or start_port > end_port:
+        print("Invalid port range")
+        sys.exit(1)
 
-    open_ports = scan_range(target, start_port, end_port)
+    print(f"[*] Starting port scan")
+    start_scan = time.time()
+
+    all_results = {}
+
+    for target in targets: 
+        print(f"\n[*] Scanning host {target}")
+        results = scan_range(target, start_port, end_port)
+        all_results[target] = results
+    
+
+    duration = round(time.time() - start_scan, 2)
 
     print(f"\n[+] Scan complete!")
-    print(f"[+] Found {len(open_ports)} open ports:")
-    for port in open_ports:
-        print(f"    Port {port}: open")
+    print(f"[+] Scan time: {duration}s")
 
+    open_ports = [r for r in results if r["state"] == "open"]
+
+    print(f"[+] Found {len(open_ports)} open ports: \n")
+    for r in open_ports:
+        banner = f" | {r['banner']}" if r["banner"] else ""
+        print(f"Port {r['port']:5d} OPEN{banner}")
 
 if __name__ == "__main__":
     main()
